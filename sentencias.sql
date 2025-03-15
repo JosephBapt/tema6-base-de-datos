@@ -108,18 +108,18 @@ END;
 
 
 DROP TABLE resumen_comisiones_vendedores CASCADE CONSTRAINTS;
-/
+
 -- Crea la tabla RESUMEN_COMISIONES_VENDEDORES
 CREATE TABLE resumen_comisiones_vendedores(
-    anho NUMBER(4),
-    mes NUMBER(2),
-    fk_vendedores VARCHAR2(3 CHAR),
-    cantidad_facturas NUMBER(5),
-    monto_total_facturado NUMBER(10,2),
-    monto_total_cobrado NUMBER(10,2),
-    monto_total_por_cobrar NUMBER(10,2),
-    porcentaje_comision NUMBER(4,3),
-    monto_comision NUMBER(10,2),
+    anho NUMBER(4) NOT NULL,
+    mes NUMBER(2) NOT NULL,
+    fk_vendedores VARCHAR2(3 CHAR) NOT NULL,
+    cantidad_facturas NUMBER(5) NOT NULL,
+    monto_total_facturado NUMBER(10,2) NOT NULL,
+    monto_total_cobrado NUMBER(10,2) NOT NULL,
+    monto_total_por_cobrar NUMBER(10,2) NOT NULL,
+    porcentaje_comision NUMBER(4,3) NOT NULL,
+    monto_comision NUMBER(10,2) NOT NULL,
 
     CONSTRAINT resumen_com_pk PRIMARY KEY (anho, mes, fk_vendedores),
     CONSTRAINT resumen_vendedores_fk FOREIGN KEY (fk_vendedores) REFERENCES vendedores(id_vendedor)
@@ -267,20 +267,25 @@ BEGIN
     CLOSE get_vendedorb;
 END;
 /
+
 BEGIN
+DBMS_SCHEDULER.DROP_JOB (
+   job_name         => 'cada_3er_dia',
+   force            => TRUE,
+   defer            => FALSE,
+   commit_semantics  => 'STOP_ON_FIRST_ERROR');
 
 DBMS_SCHEDULER.CREATE_JOB (
-   job_name             => 'cada 3er dia',
-   job_type             => 'STORED_PROCEDURE',
+   job_name             => 'cada_3er_dia',
+   job_type             => 'PLSQL_BLOCK',
    job_action           => 'BEGIN cargar_comisiones(EXTRACT(YEAR FROM sysdate), EXTRACT(MONTH FROM sysdate)); END;',
    start_date           => sysdate,
-   repeat_interval      => 'FREQ=MONTHLY; BYDAY=3',
+   repeat_interval      => 'FREQ=MONTHLY; BYMONTHDAY=3;',
    end_date             => NULL, -- or any end date
    enabled              =>  TRUE,
    comments             => 'Carga las comisiones el tercer dia de cada mes');
-
 END;
-SELECT EXTRACT(MONTH FROM sysdate) FROM dual;
+/
 
 CREATE OR REPLACE FUNCTION mejor_vendedor(v_anho NUMBER, v_mes NUMBER) RETURN BOOLEAN IS 
 BEGIN
@@ -318,41 +323,97 @@ END;
 -- );
 
 CREATE OR REPLACE TRIGGER validacion_servicio
-BEFORE INSERT OR UPDATE OR DELETE ON servicios
+BEFORE INSERT OR UPDATE ON servicios
 FOR EACH ROW
+DECLARE
+    condicion1 NUMBER;
+    condicion2 NUMBER;
+    condicion3 NUMBER;
 BEGIN
--- Valida la insercion a la tabla servicios
+-- Valida la insercion y actualizacion de la tabla servicios
+
+    SELECT COUNT(*) INTO condicion1 FROM sucursales WHERE id_sucursal = :NEW.fk_sucursales;
+    SELECT COUNT(*) INTO condicion2 FROM clientes WHERE id_cliente = :NEW.fk_clientes;
+    SELECT COUNT(*) INTO condicion3 FROM clientes WHERE id_cliente = :NEW.fk_clientes AND ciudad_cl = 'BOGOTÁ' AND segmento_cl = 'MUJER';
+
+    IF condicion1 < 1 THEN
+        RAISE_APPLICATION_ERROR(-20012, 'La columna fk_sucursales debe ser la id de una sucursal existente');
+    END IF;
+    IF condicion2 < 1 THEN
+        RAISE_APPLICATION_ERROR(-20013, 'La columna fk_clientes debe ser la id de un cliente existente');
+    END IF;
+    IF condicion3 < 1 THEN
+        RAISE_APPLICATION_ERROR(-20014, 'El cliente con ser de la ciudad Bogotá y que su segmento sea Mujer');
+    END IF;
+END;
+/
+
+DROP TABLE bitacora CASCADE CONSTRAINTS;
+
+CREATE TABLE bitacora (
+    nombre_tabla VARCHAR2(32 CHAR) NOT NULL,
+    evento VARCHAR2(32 CHAR) NOT NULL,
+    fecha_y_hora DATE NOT NULL,
+
+    CONSTRAINT bitacora_pk PRIMARY KEY (nombre_tabla, evento, fecha_y_hora)
+);
+/
+
+CREATE OR REPLACE TRIGGER validacion_vendedores
+BEFORE INSERT OR UPDATE OR DELETE ON vendedores
+FOR EACH ROW
+DECLARE
+    evento bitacora.evento%TYPE;
+BEGIN
+-- Valida la insercion y actualizacion de la tabla vendedores
     IF INSERTING THEN
-        IF :NEW.fecha_inicio_serv >= :NEW.fecha_fin_serv THEN
-            RAISE_APPLICATION_ERROR(-20010, 'La fecha de inicio debe ser menor que la fecha de finalizacion');
-        END IF:
-        IF NOT :NEW.costo_servicio > 0 THEN
-            RAISE_APPLICATION_ERROR(-20011, 'El costo del servicio debe ser mayor a 0');
-        END IF:
-        IF NOT EXIST (SELECT 1 FROM sucursales WHERE id_sucursal = :NEW.fk_sucursales) THEN
-            RAISE_APPLICATION_ERROR(-20012, 'La columna fk_sucursales debe ser la id de una sucursal existente');
-        END IF;
-        IF NOT EXIST (SELECT 1 FROM clientes WHERE id_cliente = :NEW.fk_clientes) THEN
-            RAISE_APPLICATION_ERROR(-20013, 'La columna fk_clientes debe ser la id de un cliente existente');
-        END IF;
+        evento := 'INSERT';
     END IF;
--- Valida la actualizacion a la tabla servicios
     IF UPDATING THEN
-        IF :NEW.fecha_inicio_serv >= :NEW.fecha_fin_serv THEN
-            RAISE_APPLICATION_ERROR(-20010, 'La fecha de inicio debe ser menor que la fecha de finalizacion');
-        END IF:
-        IF NOT :NEW.costo_servicio > 0 THEN
-            RAISE_APPLICATION_ERROR(-20011, 'El costo del servicio debe ser mayor a 0');
-        END IF:
-        IF NOT EXIST (SELECT 1 FROM sucursales WHERE id_sucursal = :NEW.fk_sucursales) THEN
-            RAISE_APPLICATION_ERROR(-20012, 'La columna fk_sucursales debe ser la id de una sucursal existente');
-        END IF;
-        IF NOT EXIST (SELECT 1 FROM clientes WHERE id_cliente = :NEW.fk_clientes) THEN
-            RAISE_APPLICATION_ERROR(-20013, 'La columna fk_clientes debe ser la id de un cliente existente');
-        END IF;
+        evento := 'UPDATE';
     END IF;
--- Valida la eliminacion a la tabla servicios
     IF DELETING THEN
+        evento := 'DELETE';
     END IF;
+    INSERT INTO bitacora (nombre_tabla, evento, fecha_y_hora) values ('VENDEDORES', evento, SYSDATE);
+END;
+/
+
+CREATE OR REPLACE TRIGGER validacion_canales
+BEFORE INSERT OR UPDATE ON canales
+DECLARE
+    evento bitacora.evento%TYPE;
+BEGIN
+-- Valida la insercion y actualizacion de la tabla vendedores
+    IF INSERTING THEN
+        evento := 'INSERT';
+    END IF;
+    IF UPDATING THEN
+        evento := 'UPDATE';
+    END IF;
+    IF DELETING THEN
+        evento := 'DELETE';
+    END IF;
+    INSERT INTO bitacora (nombre_tabla, evento, fecha_y_hora) values ('CANALES', evento, SYSDATE);
+END;
+/
+
+CREATE OR REPLACE TRIGGER validacion_sucursales
+BEFORE INSERT OR UPDATE ON sucursales
+FOR EACH ROW
+DECLARE
+    evento bitacora.evento%TYPE;
+BEGIN
+-- Valida la insercion y actualizacion de la tabla vendedores
+    IF INSERTING THEN
+        evento := 'INSERT';
+    END IF;
+    IF UPDATING THEN
+        evento := 'UPDATE';
+    END IF;
+    IF DELETING THEN
+        evento := 'DELETE';
+    END IF;
+    INSERT INTO bitacora (nombre_tabla, evento, fecha_y_hora) values ('SUCURSALES', evento, SYSDATE);
 END;
 /
